@@ -1,0 +1,32 @@
+{
+  "name": "build",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "npm run build-wordpress",
+    "clean": "src/pk.sh clean",
+    "build-wordpress": "src/pk.sh build-wordpress",
+    "check-wordpress": "src/pk.sh check-wordpress",
+    "i": "npm run install-core",
+    "install-core": "src/pk.sh install-core",
+    "activate-core": "src/pk.sh activate-core",
+    "logs": "npm run logs:all",
+    "logs:podman": "podman logs --tail 20 --follow pk-wp",
+    "logs:presskit": "tail -f podman-build/wordpress/wp-content/presskit-core.log",
+    "logs:all": "concurrently -n podman,presskit -c blue,green \"npm run logs:podman\" \"npm run logs:presskit\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanph/presskit-core-build.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ryanph/presskit-core-build/issues"
+  },
+  "homepage": "https://github.com/ryanph/presskit-core-build#readme",
+  "description": "",
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

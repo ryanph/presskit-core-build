@@ -263,6 +263,48 @@ pk_install_core() {
   cd "$core_dst" && composer install
 }
 
+
+pk_watch_core_ui() {
+  local core_ui_src="$( cd $REPO_ROOT/../core-ui/ && pwd )"
+  local core_ui_dist="$( cd $REPO_ROOT/../core-ui/dist/ && pwd )"
+  local core_ui_dst="$PODMAN_WP_SRC_DIR/wp-content/plugins/presskit-core/ui"
+
+  pk_log "STEP" "🔧 Watching Core UI for changes"
+  pk_log "INFO" "📁 Source: $core_ui_src"
+  pk_log "INFO" "📁 Destination: $core_ui_dst"
+
+  # Function to rebuild and reinstall
+  rebuild_and_install() {
+    pk_log "STEP" "🔄 Changes detected - rebuilding Core UI"
+    cd "$core_ui_src" && npm run build
+    pk_log "STEP" "📦 Reinstalling Core UI"
+    rsync -avz --delete "$core_ui_dist/" "$core_ui_dst/"
+  }
+
+  # Initial build and install
+  rebuild_and_install
+
+  # Watch for changes and rebuild
+  cd "$core_ui_src" && npm run dev &
+  local watch_pid=$!
+
+  # Set up file watching using fswatch
+  if ! command -v fswatch &> /dev/null; then
+    pk_log "ERROR" "fswatch is not installed. Please install it using: brew install fswatch"
+    kill $watch_pid
+    return 1
+  fi
+
+  pk_log "INFO" "👀 Watching for changes in $core_ui_dist"
+  fswatch -o "$core_ui_dist" | while read; do
+    if ! kill -0 $watch_pid 2>/dev/null; then
+      pk_log "ERROR" "Watch process died unexpectedly"
+      return 1
+    fi
+    rebuild_and_install
+  done
+}
+
 pk_install_core_ui() {
 
   local core_ui_src="$( cd $REPO_ROOT/../core-ui/ && pwd )"

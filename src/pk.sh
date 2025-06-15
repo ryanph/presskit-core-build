@@ -21,7 +21,9 @@ case "$command" in
     "install-core")
         pk_install_core
         pk_install_core_ui
-        pk_activate_core
+        ;;
+    "watch-core-ui")
+        pk_watch_core_ui
         ;;
     "activate-core")
         pk_activate_core
