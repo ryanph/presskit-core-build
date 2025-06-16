@@ -13,6 +13,7 @@
     "logs": "npm run logs:all",
     "logs:podman": "podman logs --tail 20 --follow pk-wp",
     "logs:presskit": "tail -f podman-build/wordpress/wp-content/presskit-core.log",
+    "logs:browser": "node src/logs-browser.js",
     "logs:all": "concurrently -n podman,presskit -c blue,green \"npm run logs:podman\" \"npm run logs:presskit\""
   },
   "repository": {
