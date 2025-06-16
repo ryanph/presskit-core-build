@@ -11,8 +11,8 @@ export PODMAN_MACHINE_DST_MOUNT="$REPO_ROOT"
 
 export PODMAN_DB_IMAGE="postgres:15.1-alpine"
 export PODMAN_DB_CONTAINER="pk-db"
-export PODMAN_DB_SRC_DIR="$BUILD_ROOT/mysql"
-export PODMAN_DB_DST_DIR="/bitnami/mysql"
+export PODMAN_DB_SRC_DIR="$BUILD_ROOT/mariadb"
+export PODMAN_DB_DST_DIR="/bitnami/mariadb"
 export PODMAN_DB_ROOT_PASSWORD="root"
 export PODMAN_DB_DATABASE="bitnami_wordpress"
 export PODMAN_DB_USER="bn_wordpress"
@@ -28,6 +28,224 @@ export PODMAN_WP_ADMIN_PASSWORD="admin"
 export PODMAN_WP_ADMIN_EMAIL="admin@localhost.com"
 
 export PODMAN_NETWORK="presskit-live"
+
+export RSYNC_COMMAND="rsync -axP --delete --exclude='.git,.gitignore,node_modules,vendor,.DS_Store,*.log,*.env'"
+
+if [ ! -f "$REPO_ROOT/.rsync-exclude" ]; then
+  pk_log "ERROR" "rsync-exclude file does not exist"
+  exit 1
+fi
+
+### PODMAN DEV ENVIRONMENT MANAGEMENT
+
+pk_clean_dev() {
+
+  pk_log "STEP" "🔧 Deleting Podman machine '$PODMAN_MACHINE_NAME'"
+  pk_log "CMD" "podman machine rm --force"
+
+  pk_log "STEP" "🔧 Deleting build directory '$BUILD_ROOT'"
+  pk_fs_cmd rm -rfv "$BUILD_ROOT"/*
+
+}
+
+pk_wait_dev() {
+  local health_level="$1"
+  if [ -z "$health_level" ]; then
+    health_level=1
+  fi
+  pk_log "STEP" "🔍 Checking WordPress ($health_level)"
+
+  while true; do
+
+      last_log=$(podman logs --tail 1 "${PODMAN_WP_CONTAINER}" 2>/dev/null || echo "No Logs")
+      http_code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ 2>/dev/null || echo "")
+      if podman exec "${PODMAN_WP_CONTAINER}" wp plugin list --status=active >/dev/null 2>&1; then
+          wp_cli_ok=1
+      else
+          wp_cli_ok=0
+      fi
+
+      pk_log "WAIT" "🔍 HTTP $http_code WP CLI $wp_cli_ok $last_log"
+
+      if [ $health_level -eq 1 ]; then
+        if [ $http_code -eq 302 ] || [ $http_code -eq 200 ]; then
+          pk_log "INFO" "🥳 WordPress is ready"
+          break
+        fi
+      fi
+
+      if [ $health_level -eq 2 ]; then
+        if [ $http_code -eq 200 ] && [ $wp_cli_ok -eq 1 ]; then
+            pk_log "INFO" "🥳 WordPress is ready"
+            break
+        fi
+      fi
+
+      sleep 1
+
+  done
+}
+
+pk_start_dev() {
+
+  pk_log "BUILD" "Building Podman WordPress environment"
+  pk_log "" "📁 Local build and persistence directories"
+  pk_log "" "🎯 Build Root: $BUILD_ROOT"
+  pk_log "" "🎯 WordPress: $PODMAN_WP_SRC_DIR"
+  pk_log "" "🎯 Database: $PODMAN_DB_SRC_DIR"
+
+  pk_log "VM" "🤖 Podman Machine: $PODMAN_MACHINE_NAME"
+  pk_log "" "📁 $PODMAN_MACHINE_DST_MOUNT"
+
+  pk_log "PODMAN" "🛜  Network: $PODMAN_NETWORK"
+  pk_log "" "🥡 Database: $PODMAN_DB_CONTAINER"
+  pk_log "" "🥡 WordPress: $PODMAN_WP_CONTAINER"
+
+  pk_log "STEP" "🔧 Creating build directory"
+  pk_fs_cmd mkdir -vp "$BUILD_ROOT"
+
+  pk_log "STEP" "🔧 Creating WordPress source directory"
+  pk_fs_cmd mkdir -vp "$PODMAN_WP_SRC_DIR"
+
+  pk_log "STEP" "🔧 Creating Database source directory"
+  pk_fs_cmd mkdir -vp "$PODMAN_DB_SRC_DIR"
+
+  pk_log "STEP" "🔧 Checking Podman machine"
+  if podman machine list --format '{{.Name}}' | grep -q "$PODMAN_MACHINE_NAME"; then
+    pk_log "INFO" "🥳 Podman machine is ready"
+  else
+    pk_log "" "🔧 Podman machine does not exist, creating machine '$PODMAN_MACHINE_NAME'"
+    pk_log "" "📁 $PODMAN_MACHINE_SRC_MOUNT:$PODMAN_MACHINE_DST_MOUNT"
+    podman machine init --rootful --volume "$PODMAN_MACHINE_SRC_MOUNT:$PODMAN_MACHINE_DST_MOUNT"
+    podman machine start
+  fi
+
+
+  pk_log "STEP" "🌐 Checking network '$PODMAN_NETWORK'"
+  if podman network list --format '{{.Name}}' | grep -q "$PODMAN_NETWORK"; then
+    pk_log "INFO" "🥳 Network is ready"
+  else
+    pk_log "" "🔧 Network does not exist, creating network '$PODMAN_NETWORK'"
+    podman network create "$PODMAN_NETWORK"
+  fi
+
+  pk_log "INFO" "🔧 Creating Database container '$PODMAN_DB_CONTAINER'"
+  pk_log "" "📁 $PODMAN_DB_SRC_DIR:$PODMAN_DB_DST_DIR"
+  podman run -d --name "$PODMAN_DB_CONTAINER" --network "$PODMAN_NETWORK" \
+      -e MARIADB_ROOT_PASSWORD="$PODMAN_DB_PASSWORD" \
+      -e MARIADB_DATABASE="$PODMAN_DB_DATABASE" \
+      -e MARIADB_USER="$PODMAN_DB_USER" \
+      -e MARIADB_PASSWORD="$PODMAN_DB_PASSWORD" \
+      -v "$PODMAN_DB_SRC_DIR:$PODMAN_DB_DST_DIR" \
+      --replace \
+      bitnami/mariadb:latest >/dev/null
+
+  pk_log "INFO" "🔧 Creating WordPress container '$PODMAN_WP_CONTAINER'"
+  pk_log "" "📁 $PODMAN_WP_SRC_DIR:$PODMAN_WP_DST_DIR"
+  podman run -d --name "$PODMAN_WP_CONTAINER" --network "$PODMAN_NETWORK" \
+    -v "$PODMAN_WP_SRC_DIR:$PODMAN_WP_DST_DIR" \
+    -p "$PODMAN_WP_PORT:8080" \
+    -e WORDPRESS_DATABASE_HOST="$PODMAN_DB_CONTAINER" \
+    -e WORDPRESS_DATABASE_PORT_NUMBER=3306 \
+    -e WORDPRESS_DATABASE_NAME="$PODMAN_DB_DATABASE" \
+    -e WORDPRESS_DATABASE_USER="$PODMAN_DB_USER" \
+    -e WORDPRESS_DATABASE_PASSWORD="$PODMAN_DB_PASSWORD" \
+    -e WORDPRESS_USERNAME="$PODMAN_WP_ADMIN_USER" \
+    -e WORDPRESS_PASSWORD="$PODMAN_WP_ADMIN_PASSWORD" \
+    -e WORDPRESS_EMAIL="$PODMAN_WP_ADMIN_EMAIL" \
+    --replace \
+    bitnami/wordpress:latest >/dev/null
+
+}
+
+
+### END PODMAN DEV ENVIRONMENT MANAGEMENT
+
+### BUILD FUNCTIONS
+pk_install_dev() {
+
+  local plugins_dir="$PODMAN_WP_SRC_DIR/wp-content/plugins"
+
+  if [ ! -d "$plugins_dir" ]; then
+    pk_log "ERROR" "Plugins directory does not exist ($plugins_dir)"
+    pk_log "INFO" "Did you npm run install-dev?"
+    exit
+  fi
+
+  local core_src="$( cd $REPO_ROOT/../core && pwd )"
+  local core_dst="$plugins_dir/presskit-core" 
+
+  if [ ! -d "$core_src" ]; then
+    pk_log "ERROR" "Core source directory does not exist ($core_src)"
+    exit
+  fi
+
+  pk_log "INFO" "🔧 Installing Core Plugin"
+  pk_log "INFO" "📁 Core: $core_src"
+  pk_log "INFO" "📁 Core: $core_dst"
+
+  if [ ! -d "$core_dst" ]; then
+    pk_log "WARN" "Core plugin directory does not exist ($core_dst)"
+    pk_log "INFO" "Creating Core plugin directory"
+    pk_fs_cmd mkdir -vp "$core_dst"
+    exit
+  else
+    pk_log "INFO" "Core plugin directory exists ($core_dst)"
+  fi
+
+  pk_log "STEP" "🔧 Installing Core Plugin"
+  pk_log "" "📁 $core_src:$core_dst"
+  echo $RSYNC_COMMAND "$core_src/" "$core_dst/"
+  $RSYNC_COMMAND "$core_src/" "$core_dst/"
+
+  pk_log "STEP" "🔧 Installing Core Plugin Dependencies"
+  pk_log "CMD" "cd $core_dst && composer install"
+  cd "$core_dst" && composer install
+}
+
+pk_install_dev_ui() {
+  local core_ui_src="$( cd $REPO_ROOT/../core-ui/ && pwd )"
+  local core_ui_dist="$( cd $REPO_ROOT/../core-ui/dist/ && pwd )"
+  local core_ui_dst="$PODMAN_WP_SRC_DIR/wp-content/plugins/presskit-core/ui"
+
+  pk_log "STEP" "🔧 Installing Core UI"
+  pk_log "INFO" "📁 Source: $core_ui_src"
+  pk_log "INFO" "📁 Destination: $core_ui_dst"
+
+  if [ ! -d "$core_ui_src" ]; then
+    pk_log "ERROR" "Core UI source directory does not exist"
+    return 1
+  fi
+
+  pk_log "STEP" "🔧 Building Core UI"
+  pk_log "CMD" "cd $core_ui_src && npm run build"
+  cd "$core_ui_src" && npm run build
+
+  pk_log "STEP" "🔧 Installing Core UI"
+  pk_log "CMD" "$RSYNC_COMMAND $core_ui_dist/ $core_ui_dst/"
+  $RSYNC_COMMAND "$core_ui_dist/" "$core_ui_dst/"
+
+}
+
+pk_activate_dev() {
+  pk_log "STEP" "🔧 Activating Core Plugin"
+  echo wp plugin activate presskit-core
+  
+  podman exec -it "$PODMAN_WP_CONTAINER" wp plugin activate presskit-core
+  echo wp plugin list
+  podman exec -it "$PODMAN_WP_CONTAINER" wp plugin list
+  podman logs --tail 4  "$PODMAN_WP_CONTAINER"
+}
+
+
+### END BUILD FUNCTIONS
+
+
+
+
+
+
+
 
 # Print a styled, fixed-width string
 pk_print() {
@@ -125,144 +343,14 @@ pk_cmd() {
   return $exit_code
 }
 
-pk_wait_wordpress() {
-  local health_level="$1"
-  if [ -z "$health_level" ]; then
-    health_level=1
-  fi
-  pk_log "STEP" "🔍 Checking WordPress ($health_level)"
-
-  while true; do
-
-      last_log=$(podman logs --tail 1 "${PODMAN_WP_CONTAINER}" 2>/dev/null || echo "No Logs")
-      http_code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ 2>/dev/null || echo "")
-      if podman exec "${PODMAN_WP_CONTAINER}" wp plugin list --status=active >/dev/null 2>&1; then
-          wp_cli_ok=1
-      else
-          wp_cli_ok=0
-      fi
-
-      pk_log "WAIT" "🔍 HTTP $http_code WP CLI $wp_cli_ok $last_log"
-
-      if [ $health_level -eq 1 ]; then
-        if [ $http_code -eq 302 ] || [ $http_code -eq 200 ]; then
-          pk_log "INFO" "🥳 WordPress is ready"
-          break
-        fi
-      fi
-
-      if [ $health_level -eq 2 ]; then
-        if [ $http_code -eq 200 ] && [ $wp_cli_ok -eq 1 ]; then
-            pk_log "INFO" "🥳 WordPress is ready"
-            break
-        fi
-      fi
-
-      sleep 1
-
-  done
-}
-
-pk_clean_build() {
-  pk_log "STEP" "🔧 Cleaning build directory"
-  pk_fs_cmd rm -rfv "$BUILD_ROOT"/*
-}
-
-pk_build_wordpress() {
-
-  pk_log "BUILD" "Building Podman WordPress environment"
-  pk_log "" "📁 Local build and persistence directories"
-  pk_log "" "🎯 Build Root: $BUILD_ROOT"
-  pk_log "" "🎯 WordPress: $PODMAN_WP_SRC_DIR"
-  pk_log "" "🎯 Database: $PODMAN_DB_SRC_DIR"
-  pk_log "VM" "🤖 Podman Machine: $PODMAN_MACHINE_NAME"
-  pk_log "" "📁 $PODMAN_MACHINE_DST_MOUNT"
-  pk_log "PODMAN" "🛜  Network: $PODMAN_NETWORK"
-  pk_log "" "🥡 Database: $PODMAN_DB_CONTAINER"
-  pk_log "" "🥡 WordPress: $PODMAN_WP_CONTAINER"
-
-  pk_log "STEP" "🔧 Creating build directory"
-  pk_fs_cmd mkdir -vp "$BUILD_ROOT"
-
-  pk_log "STEP" "🔧 Creating WordPress source directory"
-  pk_fs_cmd mkdir -vp "$PODMAN_WP_SRC_DIR"
-
-  pk_log "STEP" "🔧 Creating Database source directory"
-  pk_fs_cmd mkdir -vp "$PODMAN_DB_SRC_DIR"
-
-  pk_log "STEP" "🔧 Checking Podman machine"
-  if podman machine list --format '{{.Name}}' | grep -q "$PODMAN_MACHINE_NAME"; then
-    pk_log "INFO" "🥳 Podman machine is ready"
-  else
-    pk_log "" "🔧 Podman machine does not exist, creating machine '$PODMAN_MACHINE_NAME'"
-    pk_log "" "📁 $PODMAN_MACHINE_SRC_MOUNT:$PODMAN_MACHINE_DST_MOUNT"
-    podman machine init --rootful --volume "$PODMAN_MACHINE_SRC_MOUNT:$PODMAN_MACHINE_DST_MOUNT"
-    podman machine start
-  fi
 
 
-  pk_log "STEP" "🌐 Checking network '$PODMAN_NETWORK'"
-  if podman network list --format '{{.Name}}' | grep -q "$PODMAN_NETWORK"; then
-    pk_log "INFO" "🥳 Network is ready"
-  else
-    pk_log "" "🔧 Network does not exist, creating network '$PODMAN_NETWORK'"
-    podman network create "$PODMAN_NETWORK"
-  fi
-
-  pk_log "INFO" "🔧 Creating Database container '$PODMAN_DB_CONTAINER'"
-  pk_log "" "📁 $PODMAN_DB_SRC_DIR:$PODMAN_DB_DST_DIR"
-  podman run -d --name "$PODMAN_DB_CONTAINER" --network "$PODMAN_NETWORK" \
-      -e MARIADB_ROOT_PASSWORD="$PODMAN_DB_PASSWORD" \
-      -e MARIADB_DATABASE="$PODMAN_DB_DATABASE" \
-      -e MARIADB_USER="$PODMAN_DB_USER" \
-      -e MARIADB_PASSWORD="$PODMAN_DB_PASSWORD" \
-      -v "$PODMAN_DB_SRC_DIR:$PODMAN_DB_DST_DIR" \
-      --replace \
-      bitnami/mariadb:latest >/dev/null
-
-  pk_log "INFO" "🔧 Creating WordPress container '$PODMAN_WP_CONTAINER'"
-  pk_log "" "📁 $PODMAN_WP_SRC_DIR:$PODMAN_WP_DST_DIR"
-  podman run -d --name "$PODMAN_WP_CONTAINER" --network "$PODMAN_NETWORK" \
-    -v "$PODMAN_WP_SRC_DIR:$PODMAN_WP_DST_DIR" \
-    -p "$PODMAN_WP_PORT:8080" \
-    -e WORDPRESS_DATABASE_HOST="$PODMAN_DB_CONTAINER" \
-    -e WORDPRESS_DATABASE_PORT_NUMBER=3306 \
-    -e WORDPRESS_DATABASE_NAME="$PODMAN_DB_DATABASE" \
-    -e WORDPRESS_DATABASE_USER="$PODMAN_DB_USER" \
-    -e WORDPRESS_DATABASE_PASSWORD="$PODMAN_DB_PASSWORD" \
-    -e WORDPRESS_USERNAME="$PODMAN_WP_ADMIN_USER" \
-    -e WORDPRESS_PASSWORD="$PODMAN_WP_ADMIN_PASSWORD" \
-    -e WORDPRESS_EMAIL="$PODMAN_WP_ADMIN_EMAIL" \
-    --replace \
-    bitnami/wordpress:latest >/dev/null
-
-}
 
 pk_activate_core() {
   pk_log "STEP" "🔧 Activating Core"
   pk_podman podman exec -it "$PODMAN_WP_CONTAINER" wp plugin activate presskit-core
   podman logs --tail 1 -f "$PODMAN_WP_CONTAINER"
 }
-
-pk_install_core() {
-
-  local core_src="$( cd $REPO_ROOT/../core && pwd )"
-  local core_dst="$PODMAN_WP_SRC_DIR/wp-content/plugins/presskit-core" 
-
-  if [ ! -d "$core_src" ]; then
-    pk_log "ERROR" "Core source directory does not exist"
-    return 1
-  fi
-
-  pk_log "STEP" "🔧 Installing Core"
-  pk_log "" "📁 $core_src:$core_dst"
-  rsync -avz --delete "$core_src/" "$core_dst/"
-
-  pk_log "STEP" "🔧 Installing Core Dependencies"
-  pk_log "CMD" "cd $core_dst && composer install"
-  cd "$core_dst" && composer install
-}
-
 
 pk_watch_core_ui() {
   local core_ui_src="$( cd $REPO_ROOT/../core-ui/ && pwd )"
@@ -278,7 +366,7 @@ pk_watch_core_ui() {
     pk_log "STEP" "🔄 Changes detected - rebuilding Core UI"
     cd "$core_ui_src" && npm run build
     pk_log "STEP" "📦 Reinstalling Core UI"
-    rsync -avz --delete "$core_ui_dist/" "$core_ui_dst/"
+    $RSYNC_COMMAND "$core_ui_dist/" "$core_ui_dst/"
   }
 
   # Initial build and install
@@ -321,8 +409,8 @@ pk_install_core_ui() {
   cd "$core_ui_src" && npm run build
 
   pk_log "STEP" "🔧 Installing Core UI"
-  pk_log "CMD" "rsync -avz --delete $core_ui_dist/ $core_ui_dst/"
-  rsync -avz --delete "$core_ui_dist/" "$core_ui_dst/"
+  pk_log "CMD" "$RSYNC_COMMAND $core_ui_dist/ $core_ui_dst/"
+  $RSYNC_COMMAND "$core_ui_dist/" "$core_ui_dst/"
 
   ls -l "$core_ui_dst"
 

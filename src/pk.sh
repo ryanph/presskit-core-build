@@ -5,27 +5,22 @@ source src/env.sh
 command="$1"
 
 case "$command" in
-    "build")
-        pk_build_wordpress
-        pk_wait_wordpress
+
+    "start-dev")
+        pk_start_dev
+        pk_wait_dev
         ;;
-    "clean")
-        pk_clean_build
+    "wait-dev")
+        pk_wait_dev
         ;;
-    "build-wordpress")
-        pk_build_wordpress
+    "clean-dev")
+        pk_clean_dev
         ;;
-    "check-wordpress")
-        pk_wait_wordpress
+    "install-dev")
+        pk_install_dev
+        pk_activate_dev
+        pk_install_dev_ui
         ;;
-    "install-core")
-        pk_install_core
-        pk_install_core_ui
-        ;;
-    "watch-core-ui")
-        pk_watch_core_ui
-        ;;
-    "activate-core")
-        pk_activate_core
-        ;;
+
+
 esac
