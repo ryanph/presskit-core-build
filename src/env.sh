@@ -31,11 +31,6 @@ export PODMAN_NETWORK="presskit-live"
 
 export RSYNC_COMMAND="rsync -axP --delete --exclude='.git,.gitignore,node_modules,vendor,.DS_Store,*.log,*.env'"
 
-if [ ! -f "$REPO_ROOT/.rsync-exclude" ]; then
-  pk_log "ERROR" "rsync-exclude file does not exist"
-  exit 1
-fi
-
 ### PODMAN DEV ENVIRONMENT MANAGEMENT
 
 pk_clean_dev() {
