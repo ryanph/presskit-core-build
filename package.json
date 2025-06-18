@@ -5,6 +5,7 @@
   "scripts": {
     "start-dev": "src/pk.sh start-dev",
     "wait-dev": "src/pk.sh wait-dev",
+    "install": "src/pk.sh install",
     "install-dev": "src/pk.sh install-dev",
     "activate-dev": "src/pk.sh activate-dev",
     "clean-dev": "src/pk.sh clean-dev",

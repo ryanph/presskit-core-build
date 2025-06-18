@@ -16,6 +16,9 @@ case "$command" in
     "clean-dev")
         pk_clean_dev
         ;;
+    "install")
+        pk_install_dev
+        ;;
     "install-dev")
         pk_install_dev
         pk_activate_dev
